@@ -1,0 +1,751 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+    <title>Neon-7: System Override</title>
+    <style>
+        body { margin: 0; padding: 0; background-color: #000; color: #00ffcc; font-family: 'Courier New', Courier, monospace; display: flex; justify-content: center; align-items: center; height: 100vh; width: 100vw; overflow: hidden; }
+        canvas { background-color: #050510; width: 100vw; height: 100vh; object-fit: contain; touch-action: none; -webkit-user-select: none; user-select: none; }
+        #mobileInput { position: absolute; top: -1000px; left: -1000px; opacity: 0; pointer-events: none; }
+    </style>
+</head>
+<body>
+
+<input type="text" id="mobileInput" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false">
+<canvas id="gameCanvas" width="800" height="600"></canvas>
+
+<script>
+    const canvas = document.getElementById('gameCanvas');
+    const ctx = canvas.getContext('2d');
+    const apiKey = ""; // Provided by execution environment
+    const mobileInput = document.getElementById('mobileInput');
+
+    let gameState = 'CHARACTER_CREATION'; 
+    let lastTime = 0; let globalTime = 0; 
+    let currentLootDisplay = null; let postAmuletState = 'STORY_INTRO';
+    let currentStage = 1; let stageEnemiesDefeated = 0; let tournamentRound = 1;
+    let pendingPet = null; let encounterType = 'STANDARD'; 
+    const keys = {};
+
+    const vPad = {
+        activeTouches: {},
+        buttons: {
+            left: { x: 80, y: 520, r: 40, label: "<", key: "ArrowLeft" }, right: { x: 180, y: 520, r: 40, label: ">", key: "ArrowRight" },
+            up: { x: 130, y: 450, r: 40, label: "^", key: "ArrowUp" }, down: { x: 130, y: 530, r: 40, label: "v", key: "ArrowDown" },
+            action: { x: 720, y: 520, r: 45, label: "ACT", key: "Enter" }, jump: { x: 720, y: 520, r: 45, label: "JMP", key: "Space" },
+            menuU: { x: 740, y: 40, w: 50, h: 40, label: "UPG", key: "KeyU" }, menuI: { x: 10, y: 40, w: 50, h: 40, label: "INV", key: "KeyI" }
+        },
+        isHitCircle: function(tx, ty, btn) { const dx = tx - btn.x; const dy = ty - btn.y; return (dx * dx + dy * dy) <= (btn.r * btn.r * 2.0); }, // Increased forgiveness
+        isHitRect: function(tx, ty, btn) { return tx >= btn.x - 20 && tx <= btn.x + btn.w + 20 && ty >= btn.y - 20 && ty <= btn.y + btn.h + 20; },
+        draw: function(ctx, state) {
+            ctx.save(); ctx.lineWidth = 2; ctx.font = '16px Courier New'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+            const drawBtn = (b) => {
+                ctx.fillStyle = keys[b.key] ? 'rgba(0, 255, 204, 0.5)' : 'rgba(0, 255, 204, 0.15)'; ctx.strokeStyle = '#00ffcc';
+                if (b.r) { ctx.beginPath(); ctx.arc(b.x, b.y, b.r, 0, Math.PI*2); ctx.fill(); ctx.stroke(); ctx.fillStyle = '#fff'; ctx.fillText(b.label, b.x, b.y); } 
+                else { ctx.fillRect(b.x, b.y, b.w, b.h); ctx.strokeRect(b.x, b.y, b.w, b.h); ctx.fillStyle = '#fff'; ctx.fillText(b.label, b.x + b.w/2, b.y + b.h/2); }
+            };
+            if (state === 'EXPLORE') { drawBtn(this.buttons.left); drawBtn(this.buttons.right); drawBtn(this.buttons.jump); drawBtn(this.buttons.menuU); drawBtn(this.buttons.menuI); } 
+            else if (['COMBAT', 'UPGRADE_MENU', 'INVENTORY_MENU', 'AMULET_SELECTION'].includes(state)) { drawBtn(this.buttons.up); drawBtn(this.buttons.down); drawBtn(this.buttons.action); } 
+            else if (['STORY_INTRO', 'STORY_BEAT', 'CHEST_REWARD', 'TOURNAMENT_LOBBY', 'BOSS_PROMPT'].includes(state)) {
+                ctx.fillStyle = keys['Enter'] ? 'rgba(0, 255, 204, 0.5)' : 'rgba(0, 255, 204, 0.15)'; ctx.fillRect(600, 500, 180, 80); ctx.strokeRect(600, 500, 180, 80); ctx.fillStyle = '#fff'; ctx.fillText("CONTINUE >", 690, 540);
+            }
+            ctx.restore();
+        }
+    };
+
+    window.addEventListener('keydown', e => {
+        if (gameState === 'CHARACTER_CREATION') {
+            if (e.target === mobileInput) return; 
+            if (e.key.length === 1 && /[a-zA-Z0-9 ]/.test(e.key) && player.name.length < 15) { player.name += e.key; mobileInput.value = player.name; } 
+            else if (e.code === 'Backspace') { player.name = player.name.slice(0, -1); mobileInput.value = player.name; } 
+            else if (e.code === 'Enter' && player.name.trim().length > 0) { player.name = player.name.trim().toUpperCase(); gameState = 'AMULET_SELECTION'; postAmuletState = 'STORY_INTRO'; mobileInput.blur(); }
+            return; 
+        }
+        keys[e.code] = true; keys[e.key.toUpperCase()] = true; 
+    });
+    window.addEventListener('keyup', e => { keys[e.code] = false; keys[e.key.toUpperCase()] = false; });
+    
+    mobileInput.addEventListener('input', e => { if (gameState === 'CHARACTER_CREATION') player.name = mobileInput.value.toUpperCase().slice(0, 15); });
+    mobileInput.addEventListener('keyup', e => { if (gameState === 'CHARACTER_CREATION' && e.key === 'Enter' && player.name.trim().length > 0) { player.name = player.name.trim().toUpperCase(); mobileInput.blur(); gameState = 'AMULET_SELECTION'; postAmuletState = 'STORY_INTRO'; } });
+
+    // Corrected Touch Math mapping container size to actual drawn canvas bounds
+    function handleTouch(e, isDown) {
+        if (gameState !== 'CHARACTER_CREATION') e.preventDefault();
+        const rect = canvas.getBoundingClientRect(); 
+        
+        // Calculate true scaling factor resolving CSS object-fit: contain
+        const scale = Math.min(rect.width / 800, rect.height / 600);
+        const offsetX = (rect.width - (800 * scale)) / 2;
+        const offsetY = (rect.height - (600 * scale)) / 2;
+
+        for (let i = 0; i < e.changedTouches.length; i++) {
+            const touch = e.changedTouches[i]; 
+            const tx = (touch.clientX - rect.left - offsetX) / scale;
+            const ty = (touch.clientY - rect.top - offsetY) / scale;
+            const id = touch.identifier;
+            
+            if (gameState === 'CHARACTER_CREATION') { if(isDown) mobileInput.focus(); continue; }
+            
+            let hitKey = null;
+
+            if (gameState === 'EXPLORE') {
+                if (vPad.isHitCircle(tx, ty, vPad.buttons.left)) hitKey = 'ArrowLeft'; 
+                else if (vPad.isHitCircle(tx, ty, vPad.buttons.right)) hitKey = 'ArrowRight'; 
+                else if (vPad.isHitCircle(tx, ty, vPad.buttons.jump)) hitKey = 'Space'; 
+                else if (vPad.isHitRect(tx, ty, vPad.buttons.menuU)) hitKey = 'KeyU'; 
+                else if (vPad.isHitRect(tx, ty, vPad.buttons.menuI)) hitKey = 'KeyI';
+            } 
+            else if (['COMBAT', 'UPGRADE_MENU', 'INVENTORY_MENU', 'AMULET_SELECTION'].includes(gameState)) {
+                if (vPad.isHitCircle(tx, ty, vPad.buttons.up)) hitKey = 'ArrowUp'; 
+                else if (vPad.isHitCircle(tx, ty, vPad.buttons.down)) hitKey = 'ArrowDown'; 
+                else if (vPad.isHitCircle(tx, ty, vPad.buttons.action) || tx > 400) hitKey = 'Enter'; // Massive right-screen hitzone
+            } 
+            else if (gameState === 'TOURNAMENT_LOBBY') {
+                if (vPad.isHitRect(tx, ty, vPad.buttons.menuU)) hitKey = 'KeyU'; 
+                else if (vPad.isHitRect(tx, ty, vPad.buttons.menuI)) hitKey = 'KeyI';
+                else if (tx > 600 && ty > 400) hitKey = 'KeyR';
+                else hitKey = 'Enter'; // Tap anywhere else to start
+            }
+            else if (gameState === 'BOSS_PROMPT') {
+                if (tx < 400) hitKey = 'Y'; else hitKey = 'N'; 
+            }
+            else {
+                hitKey = 'Enter'; // Tap absolutely anywhere to continue dialogue/chests
+            }
+
+            if (isDown && hitKey) { keys[hitKey] = true; vPad.activeTouches[id] = hitKey; } 
+            else if (!isDown && vPad.activeTouches[id]) { keys[vPad.activeTouches[id]] = false; delete vPad.activeTouches[id]; }
+        }
+    }
+    canvas.addEventListener('touchstart', e => handleTouch(e, true), { passive: false });
+    canvas.addEventListener('touchend', e => handleTouch(e, false));
+    canvas.addEventListener('touchcancel', e => handleTouch(e, false));
+
+    const player = {
+        name: "", x: 150, y: 450, baseY: 450, vy: 0, isJumping: false, speed: 200, color: '#00ffcc',
+        level: 1, xp: 0, nextLevelXp: 100, skillPoints: 0, stats: { str: 5, vit: 5, tech: 5, spd: 5 },
+        hp: 100, maxHp: 100, mp: 50, maxMp: 50, atb: 0, maxAtb: 100, speedStat: 30, baseDamage: 10, magicDamage: 15,
+        distanceTraveled: 0, isMoving: false, xpMultiplier: 1, inventory: [], gear: { weapon: null, armor: null, shoes: null, accessory: null }, 
+        amulet: [], pet: null, activeCurse: null, activeBlessing: null,
+        updateDerivedStats: function() {
+            const g = this.gear; let bStr = g.weapon?.bonusStr || 0; let bTech = g.weapon?.bonusTech || 0;
+            let pXp = this.pet?.multXp || 1, pStr = this.pet?.multStr || 1, pTech = this.pet?.multTech || 1, pSpd = this.pet?.multSpd || 1, pHp = this.pet?.multHp || 1;
+            let mHp = (g.armor?.multHp || 1) * (g.accessory?.multHp || 1) * pHp; let mSpd = (g.shoes?.multSpd || 1) * (g.accessory?.multSpd || 1) * pSpd;
+            let mStr = (g.weapon?.multStr || 1) * (g.accessory?.multStr || 1) * pStr; let mTech = (g.weapon?.multTech || 1) * (g.accessory?.multTech || 1) * pTech;
+            let mXp = (g.accessory?.multXp || 1) * pXp;
+            let amXp = 1, amStr = 1, amTech = 1, amSpd = 1;
+            this.amulet.forEach(gem => { if (gem === 'XP') amXp *= 10; if (gem === 'STR') amStr *= 2; if (gem === 'TECH') amTech *= 2; if (gem === 'SPD') amSpd *= 2; });
+            let tempHp = 1, tempSpd = 1, tempStr = 1, tempTech = 1;
+            if (this.activeBlessing === 'TITAN_HEALTH') tempHp = 50; if (this.activeBlessing === 'HYPER_SPEED') tempSpd = 50; if (this.activeBlessing === 'OMEGA_STRENGTH') tempStr = 50; if (this.activeBlessing === 'QUANTUM_MAGIC') tempTech = 50;
+            this.xpMultiplier = mXp * amXp; let autoLevelBonusHp = (this.level - 1) * 20; let autoLevelBonusMp = (this.level - 1) * 10; 
+            this.maxHp = Math.floor((50 + autoLevelBonusHp + (this.stats.vit * 10)) * mHp * tempHp); this.maxMp = Math.floor(25 + autoLevelBonusMp + ((this.stats.tech + bTech) * 5));
+            this.speedStat = Math.floor((15 + (this.stats.spd * 3)) * mSpd * amSpd * tempSpd); this.baseDamage = Math.floor(((this.stats.str + bStr) * 2) * mStr * amStr * tempStr); this.magicDamage = Math.floor(((this.stats.tech + bTech) * 3) * mTech * amTech * tempTech);
+            if (this.activeBlessing === 'TITAN_HEALTH') this.hp = this.maxHp; else if (this.hp > this.maxHp) this.hp = this.maxHp; 
+            if (this.mp > this.maxMp) this.mp = this.maxMp;
+        }
+    };
+
+    let cameraX = 0; const rain = Array.from({length: 100}, () => ({ x: Math.random() * 800, y: Math.random() * 600, speed: 300 + Math.random() * 200, length: 10 + Math.random() * 20 }));
+    let entities = []; let enemy = null; let fallbackEnemy = { name: 'Construct', hp: 60, maxHp: 60, atb: 0, maxAtb: 100, speedStat: 20, color: '#ff0055', entranceQuote: 'Target locked.', attackQuote: 'Attack.' };
+    const combat = { menuIndex: 0, options: ['Attack', 'Magic (Cost 10)', '✨ AI Hack (Cost 20)'], turnState: 'FILLING', message: '', messageTimer: 0, particles: [], freezeTimer: 0 };
+    const upgradeMenu = { index: 0, options: ['str', 'vit', 'tech', 'spd', 'exit'], labels: ['STR (Physical Dmg)', 'VIT (Max HP)', 'TECH (Magic Dmg)', 'SPD (ATB Speed)', 'RETURN'] };
+    const amuletMenu = { index: 0, options: [{ id: 'XP', label: 'Sapphire (10x XP)' }, { id: 'STR', label: 'Ruby (2x STR)' }, { id: 'TECH', label: 'Topaz (2x TECH)' }, { id: 'SPD', label: 'Emerald (2x SPD)' }] };
+    const inventoryMenu = { index: 0 };
+    const cursesList = ['BLURRED_VISION', 'SYSTEM_FREEZE', 'MINIATURIZED', 'GLITCH_DANCE']; const blessingsList = ['OMEGA_STRENGTH', 'HYPER_SPEED', 'QUANTUM_MAGIC', 'TITAN_HEALTH'];
+    const petList = [ { name: 'Neon-Hound', multStr: 1.5, multSpd: 1.2, multHp: 1, multTech: 1, multXp: 1 }, { name: 'Cyber-Feline', multTech: 1.5, multSpd: 1.5, multHp: 1, multStr: 1, multXp: 1 }, { name: 'Plasma-Turtle', multHp: 2.0, multTech: 1.2, multStr: 1, multSpd: 1, multXp: 1 }, { name: 'Data-Owl', multXp: 2.0, multTech: 1.5, multHp: 1, multStr: 1, multSpd: 1 } ];
+    let storyText = "SYSTEM BOOT.\nLocation: Hemsworth Quarantine Zone.\nDirective: Escape the neon slums, find companions, and defeat the Omega Construct.\n\n[TAP 'CONTINUE' TO WAKE UP]";
+    let postCombatMessage = "";
+
+    async function fetchWithRetry(url, options, retries = 3) {
+        const delays = [1000, 2000, 4000];
+        for (let i = 0; i < retries; i++) { try { const response = await fetch(url, options); if (!response.ok) throw new Error(`HTTP error ${response.status}`); return await response.json(); } catch (error) { if (i === retries - 1) throw error; await new Promise(res => setTimeout(res, delays[i])); } }
+    }
+    const API_URL = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-09-2025:generateContent?key=${apiKey}`;
+
+    async function fetchDynamicEnemy(level, type) {
+        let prompt = `Generate a cyberpunk enemy for player level ${level}. Provide name, maxHp, speedStat, neon colorHex, short entrance taunt, short attack quote. JSON format.`;
+        if (type === 'BOSS') prompt = `Generate a terrifying cyberpunk BOSS enemy. Provide an intimidating name, huge maxHp (scale for level ${level} boss), speedStat, intense neon colorHex, menacing entrance taunt, crushing attack quote. JSON format.`; 
+        else if (type === 'PET') prompt = `Generate a feral robotic cyberpunk animal/pet. Provide name, maxHp, speedStat, bright neon colorHex, animalistic entrance taunt, animal attack quote. JSON format.`;
+        else if (type === 'TOURNAMENT') prompt = `Generate a cyberpunk gladiator/arena fighter. Provide an ego-driven name, maxHp, speedStat, flashy neon colorHex, showboating entrance taunt, flashy attack quote. JSON format.`;
+        try { const data = await fetchWithRetry(API_URL, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ contents: [{ parts: [{ text: prompt }] }], generationConfig: { responseMimeType: "application/json", responseSchema: { type: "OBJECT", properties: { name: { type: "STRING" }, maxHp: { type: "INTEGER" }, speedStat: { type: "INTEGER" }, colorHex: { type: "STRING" }, entranceQuote: { type: "STRING" }, attackQuote: { type: "STRING" } }, required: ["name", "maxHp", "speedStat", "colorHex", "entranceQuote", "attackQuote"] } } }) }); return JSON.parse(data.candidates[0].content.parts[0].text); } catch (e) { return null; }
+    }
+
+    async function fetchAIHack(enemyName) {
+        const prompt = `Describe a cinematic 1-sentence cyberpunk hack against ${enemyName}. Return JSON with description and damage (40-80).`;
+        try { const data = await fetchWithRetry(API_URL, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ contents: [{ parts: [{ text: prompt }] }], generationConfig: { responseMimeType: "application/json", responseSchema: { type: "OBJECT", properties: { description: { type: "STRING" }, damage: { type: "INTEGER" } }, required: ["description", "damage"] } } }) }); return JSON.parse(data.candidates[0].content.parts[0].text); } catch (e) { return { description: "System override sequence initiated.", damage: 50 }; }
+    }
+
+    async function fetchNextStoryBeat(defeatedEnemy, type) {
+        let prompt = `You are a narrator for a cyberpunk game. The rogue AI player named ${player.name} just defeated a ${defeatedEnemy}. Write 2 short, gritty sentences describing ${player.name} moving deeper into the neon environment. Return JSON with 'story'.`;
+        if (type === 'BOSS') prompt = `You are a narrator. The player named ${player.name} just defeated a major BOSS named ${defeatedEnemy}. Write a cinematic, 3-sentence narrative chapter describing a massive shift in the city's environment. Return JSON with 'story'.`; 
+        else if (type === 'PET') prompt = `Narrate how the wild robotic pet ${defeatedEnemy} submits to the player ${player.name} and joins their party. 2 short sentences. Return JSON with 'story'.`;
+        try { const data = await fetchWithRetry(API_URL, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ contents: [{ parts: [{ text: prompt }] }], generationConfig: { responseMimeType: "application/json", responseSchema: { type: "OBJECT", properties: { story: { type: "STRING" } }, required: ["story"] } } }) }); return JSON.parse(data.candidates[0].content.parts[0].text).story; } catch (e) { return `${player.name} stands victorious. The journey continues.`; }
+    }
+
+    function wrapText(text, x, y, maxWidth, lineHeight) {
+        if (!text) return; 
+        const paragraphs = String(text).split('\n'); let currentY = y;
+        for (let p = 0; p < paragraphs.length; p++) {
+            const words = paragraphs[p].split(' '); let line = '';
+            for(let n = 0; n < words.length; n++) {
+                const testLine = line + words[n] + ' ';
+                if (ctx.measureText(testLine).width > maxWidth && n > 0) { ctx.fillText(line, x, currentY); line = words[n] + ' '; currentY += lineHeight; } 
+                else { line = testLine; }
+            }
+            ctx.fillText(line, x, currentY); currentY += lineHeight + (lineHeight * 0.5);
+        }
+    }
+
+    function createParticle(x, y, text, color) { combat.particles.push({ x, y, text, color, life: 1.0, velocityY: -50 }); }
+
+    function generateChestLoot() {
+        const slots = ['weapon', 'armor', 'shoes', 'accessory']; const slot = slots[Math.floor(Math.random() * slots.length)];
+        let item = { name: "", slot: slot, bonusStr: 0, bonusTech: 0, multHp: 1, multSpd: 1, multXp: 1, multStr: 1, multTech: 1 };
+        if (slot === 'weapon') {
+            item.name = ["Plasma", "Neon", "Quantum"][Math.floor(Math.random()*3)] + " " + ["Blade", "Rifle", "Deck"][Math.floor(Math.random()*3)];
+            if(Math.random() > 0.5) item.bonusStr = Math.floor(Math.random() * 10) + player.level * 2; else item.bonusTech = Math.floor(Math.random() * 10) + player.level * 2;
+            if(Math.random() > 0.9) item.multStr = 2.0; 
+        } else if (slot === 'armor') { item.name = ["Titanium", "Aegis", "Kevlar"][Math.floor(Math.random()*3)] + " Chassis"; item.multHp = 1.0 + (Math.floor(Math.random() * 10) * 0.1); 
+        } else if (slot === 'shoes') { item.name = ["Hermes", "Sonic", "Aero"][Math.floor(Math.random()*3)] + " Treads"; item.multSpd = 1.0 + (Math.floor(Math.random() * 5) * 0.2); 
+        } else if (slot === 'accessory') {
+            item.name = ["Logic", "Data", "Matrix"][Math.floor(Math.random()*3)] + " Core";
+            const roll = Math.random();
+            if(roll > 0.6) item.multXp = [2, 3, 10][Math.floor(Math.random()*3)]; else if(roll > 0.3) { item.multStr = 2.0; item.multTech = 2.0; } else { item.multHp = 2.0; item.multSpd = 2.0; }
+        }
+        return item;
+    }
+
+    function formatItemStats(item) {
+        if (!item) return "NONE"; let stats = [];
+        if (item.bonusStr > 0) stats.push(`+${item.bonusStr} STR`); if (item.bonusTech > 0) stats.push(`+${item.bonusTech} TECH`);
+        if (item.multHp > 1) stats.push(`x${item.multHp.toFixed(1)} HP`); if (item.multSpd > 1) stats.push(`x${item.multSpd.toFixed(1)} SPD`);
+        if (item.multStr > 1) stats.push(`x${item.multStr.toFixed(1)} STR`); if (item.multTech > 1) stats.push(`x${item.multTech.toFixed(1)} TECH`);
+        if (item.multXp > 1) stats.push(`x${item.multXp} XP`);
+        return stats.join(", ");
+    }
+
+    function spawnEntity() {
+        if (Math.random() < 0.035) { 
+            const rand = Math.random();
+            if (currentStage === 1 && rand < 0.25) entities.push({ globalX: cameraX + 900, y: 400, w: 20, h: 50, type: 'CURSE', acti    });
+    window.addEventListener('keyup', e => { keys[e.code] = false; keys[e.key.toUpperCase()] = false; });
+    mobileInput.addEventListener('input', e => { if (gameState === 'CHARACTER_CREATION') player.name = mobileInput.value.toUpperCase().slice(0, 15); });
+    mobileInput.addEventListener('keyup', e => { if (gameState === 'CHARACTER_CREATION' && e.key === 'Enter' && player.name.trim().length > 0) { player.name = player.name.trim().toUpperCase(); mobileInput.blur(); gameState = 'AMULET_SELECTION'; postAmuletState = 'STORY_INTRO'; } });
+
+    function handleTouch(e, isDown) {
+        if (gameState !== 'CHARACTER_CREATION') e.preventDefault();
+        const rect = canvas.getBoundingClientRect(); const scaleX = canvas.width / rect.width; const scaleY = canvas.height / rect.height;
+        for (let i = 0; i < e.changedTouches.length; i++) {
+            const touch = e.changedTouches[i]; const tx = (touch.clientX - rect.left) * scaleX; const ty = (touch.clientY - rect.top) * scaleY; const id = touch.identifier;
+            if (gameState === 'CHARACTER_CREATION') { if(isDown) mobileInput.focus(); continue; }
+            let hitKey = null;
+            if (gameState === 'EXPLORE') {
+                if (vPad.isHitCircle(tx, ty, vPad.buttons.left)) hitKey = 'ArrowLeft'; else if (vPad.isHitCircle(tx, ty, vPad.buttons.right)) hitKey = 'ArrowRight'; else if (vPad.isHitCircle(tx, ty, vPad.buttons.jump)) hitKey = 'Space'; else if (vPad.isHitRect(tx, ty, vPad.buttons.menuU)) hitKey = 'KeyU'; else if (vPad.isHitRect(tx, ty, vPad.buttons.menuI)) hitKey = 'KeyI';
+            } else if (['COMBAT', 'UPGRADE_MENU', 'INVENTORY_MENU', 'AMULET_SELECTION'].includes(gameState)) {
+                if (vPad.isHitCircle(tx, ty, vPad.buttons.up)) hitKey = 'ArrowUp'; else if (vPad.isHitCircle(tx, ty, vPad.buttons.down)) hitKey = 'ArrowDown'; else if (vPad.isHitCircle(tx, ty, vPad.buttons.action)) hitKey = 'Enter';
+            } else {
+                if (tx > 600 && ty > 500) hitKey = 'Enter'; else if (gameState === 'BOSS_PROMPT') { if (tx < 400) hitKey = 'Y'; else hitKey = 'N'; }
+            }
+            if (isDown && hitKey) { keys[hitKey] = true; vPad.activeTouches[id] = hitKey; } else if (!isDown && vPad.activeTouches[id]) { keys[vPad.activeTouches[id]] = false; delete vPad.activeTouches[id]; }
+        }
+    }
+    canvas.addEventListener('touchstart', e => handleTouch(e, true), { passive: false });
+    canvas.addEventListener('touchend', e => handleTouch(e, false));
+    canvas.addEventListener('touchcancel', e => handleTouch(e, false));
+
+    const player = {
+        name: "", x: 150, y: 450, baseY: 450, vy: 0, isJumping: false, speed: 200, color: '#00ffcc',
+        level: 1, xp: 0, nextLevelXp: 100, skillPoints: 0, stats: { str: 5, vit: 5, tech: 5, spd: 5 },
+        hp: 100, maxHp: 100, mp: 50, maxMp: 50, atb: 0, maxAtb: 100, speedStat: 30, baseDamage: 10, magicDamage: 15,
+        distanceTraveled: 0, isMoving: false, xpMultiplier: 1, inventory: [], gear: { weapon: null, armor: null, shoes: null, accessory: null }, 
+        amulet: [], pet: null, activeCurse: null, activeBlessing: null,
+        updateDerivedStats: function() {
+            const g = this.gear; let bStr = g.weapon?.bonusStr || 0; let bTech = g.weapon?.bonusTech || 0;
+            let pXp = this.pet?.multXp || 1, pStr = this.pet?.multStr || 1, pTech = this.pet?.multTech || 1, pSpd = this.pet?.multSpd || 1, pHp = this.pet?.multHp || 1;
+            let mHp = (g.armor?.multHp || 1) * (g.accessory?.multHp || 1) * pHp; let mSpd = (g.shoes?.multSpd || 1) * (g.accessory?.multSpd || 1) * pSpd;
+            let mStr = (g.weapon?.multStr || 1) * (g.accessory?.multStr || 1) * pStr; let mTech = (g.weapon?.multTech || 1) * (g.accessory?.multTech || 1) * pTech;
+            let mXp = (g.accessory?.multXp || 1) * pXp;
+            let amXp = 1, amStr = 1, amTech = 1, amSpd = 1;
+            this.amulet.forEach(gem => { if (gem === 'XP') amXp *= 10; if (gem === 'STR') amStr *= 2; if (gem === 'TECH') amTech *= 2; if (gem === 'SPD') amSpd *= 2; });
+            let tempHp = 1, tempSpd = 1, tempStr = 1, tempTech = 1;
+            if (this.activeBlessing === 'TITAN_HEALTH') tempHp = 50; if (this.activeBlessing === 'HYPER_SPEED') tempSpd = 50; if (this.activeBlessing === 'OMEGA_STRENGTH') tempStr = 50; if (this.activeBlessing === 'QUANTUM_MAGIC') tempTech = 50;
+            this.xpMultiplier = mXp * amXp; let autoLevelBonusHp = (this.level - 1) * 20; let autoLevelBonusMp = (this.level - 1) * 10; 
+            this.maxHp = Math.floor((50 + autoLevelBonusHp + (this.stats.vit * 10)) * mHp * tempHp); this.maxMp = Math.floor(25 + autoLevelBonusMp + ((this.stats.tech + bTech) * 5));
+            this.speedStat = Math.floor((15 + (this.stats.spd * 3)) * mSpd * amSpd * tempSpd); this.baseDamage = Math.floor(((this.stats.str + bStr) * 2) * mStr * amStr * tempStr); this.magicDamage = Math.floor(((this.stats.tech + bTech) * 3) * mTech * amTech * tempTech);
+            if (this.activeBlessing === 'TITAN_HEALTH') this.hp = this.maxHp; else if (this.hp > this.maxHp) this.hp = this.maxHp; 
+            if (this.mp > this.maxMp) this.mp = this.maxMp;
+        }
+    };
+
+    let cameraX = 0; const rain = Array.from({length: 100}, () => ({ x: Math.random() * 800, y: Math.random() * 600, speed: 300 + Math.random() * 200, length: 10 + Math.random() * 20 }));
+    let entities = []; let enemy = null; let fallbackEnemy = { name: 'Construct', hp: 60, maxHp: 60, atb: 0, maxAtb: 100, speedStat: 20, color: '#ff0055', entranceQuote: 'Target locked.', attackQuote: 'Attack.' };
+    const combat = { menuIndex: 0, options: ['Attack', 'Magic (Cost 10)', '✨ AI Hack (Cost 20)'], turnState: 'FILLING', message: '', messageTimer: 0, particles: [], freezeTimer: 0 };
+    const upgradeMenu = { index: 0, options: ['str', 'vit', 'tech', 'spd', 'exit'], labels: ['STR (Physical Dmg)', 'VIT (Max HP)', 'TECH (Magic Dmg)', 'SPD (ATB Speed)', 'RETURN'] };
+    const amuletMenu = { index: 0, options: [{ id: 'XP', label: 'Sapphire (10x XP)' }, { id: 'STR', label: 'Ruby (2x STR)' }, { id: 'TECH', label: 'Topaz (2x TECH)' }, { id: 'SPD', label: 'Emerald (2x SPD)' }] };
+    const inventoryMenu = { index: 0 };
+    const cursesList = ['BLURRED_VISION', 'SYSTEM_FREEZE', 'MINIATURIZED', 'GLITCH_DANCE']; const blessingsList = ['OMEGA_STRENGTH', 'HYPER_SPEED', 'QUANTUM_MAGIC', 'TITAN_HEALTH'];
+    const petList = [ { name: 'Neon-Hound', multStr: 1.5, multSpd: 1.2, multHp: 1, multTech: 1, multXp: 1 }, { name: 'Cyber-Feline', multTech: 1.5, multSpd: 1.5, multHp: 1, multStr: 1, multXp: 1 }, { name: 'Plasma-Turtle', multHp: 2.0, multTech: 1.2, multStr: 1, multSpd: 1, multXp: 1 }, { name: 'Data-Owl', multXp: 2.0, multTech: 1.5, multHp: 1, multStr: 1, multSpd: 1 } ];
+    let storyText = "SYSTEM BOOT.\nLocation: Hemsworth Quarantine Zone.\nDirective: Escape the neon slums, find companions, and defeat the Omega Construct.\n\n[TAP 'CONTINUE' TO WAKE UP]";
+    let postCombatMessage = "";
+
+    async function fetchWithRetry(url, options, retries = 3) {
+        const delays = [1000, 2000, 4000];
+        for (let i = 0; i < retries; i++) { try { const response = await fetch(url, options); if (!response.ok) throw new Error(`HTTP error ${response.status}`); return await response.json(); } catch (error) { if (i === retries - 1) throw error; await new Promise(res => setTimeout(res, delays[i])); } }
+    }
+    const API_URL = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-09-2025:generateContent?key=${apiKey}`;
+
+    async function fetchDynamicEnemy(level, type) {
+        let prompt = `Generate a cyberpunk enemy for player level ${level}. Provide name, maxHp, speedStat, neon colorHex, short entrance taunt, short attack quote. JSON format.`;
+        if (type === 'BOSS') prompt = `Generate a terrifying cyberpunk BOSS enemy. Provide an intimidating name, huge maxHp (scale for level ${level} boss), speedStat, intense neon colorHex, menacing entrance taunt, crushing attack quote. JSON format.`; 
+        else if (type === 'PET') prompt = `Generate a feral robotic cyberpunk animal/pet. Provide name, maxHp, speedStat, bright neon colorHex, animalistic entrance taunt, animal attack quote. JSON format.`;
+        else if (type === 'TOURNAMENT') prompt = `Generate a cyberpunk gladiator/arena fighter. Provide an ego-driven name, maxHp, speedStat, flashy neon colorHex, showboating entrance taunt, flashy attack quote. JSON format.`;
+        try { const data = await fetchWithRetry(API_URL, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ contents: [{ parts: [{ text: prompt }] }], generationConfig: { responseMimeType: "application/json", responseSchema: { type: "OBJECT", properties: { name: { type: "STRING" }, maxHp: { type: "INTEGER" }, speedStat: { type: "INTEGER" }, colorHex: { type: "STRING" }, entranceQuote: { type: "STRING" }, attackQuote: { type: "STRING" } }, required: ["name", "maxHp", "speedStat", "colorHex", "entranceQuote", "attackQuote"] } } }) }); return JSON.parse(data.candidates[0].content.parts[0].text); } catch (e) { return null; }
+    }
+
+    async function fetchAIHack(enemyName) {
+        const prompt = `Describe a cinematic 1-sentence cyberpunk hack against ${enemyName}. Return JSON with description and damage (40-80).`;
+        try { const data = await fetchWithRetry(API_URL, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ contents: [{ parts: [{ text: prompt }] }], generationConfig: { responseMimeType: "application/json", responseSchema: { type: "OBJECT", properties: { description: { type: "STRING" }, damage: { type: "INTEGER" } }, required: ["description", "damage"] } } }) }); return JSON.parse(data.candidates[0].content.parts[0].text); } catch (e) { return { description: "System override sequence initiated.", damage: 50 }; }
+    }
+
+    async function fetchNextStoryBeat(defeatedEnemy, type) {
+        let prompt = `You are a narrator for a cyberpunk game. The rogue AI player named ${player.name} just defeated a ${defeatedEnemy}. Write 2 short, gritty sentences describing ${player.name} moving deeper into the neon environment. Return JSON with 'story'.`;
+        if (type === 'BOSS') prompt = `You are a narrator. The player named ${player.name} just defeated a major BOSS named ${defeatedEnemy}. Write a cinematic, 3-sentence narrative chapter describing a massive shift in the city's environment. Return JSON with 'story'.`; 
+        else if (type === 'PET') prompt = `Narrate how the wild robotic pet ${defeatedEnemy} submits to the player ${player.name} and joins their party. 2 short sentences. Return JSON with 'story'.`;
+        try { const data = await fetchWithRetry(API_URL, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ contents: [{ parts: [{ text: prompt }] }], generationConfig: { responseMimeType: "application/json", responseSchema: { type: "OBJECT", properties: { story: { type: "STRING" } }, required: ["story"] } } }) }); return JSON.parse(data.candidates[0].content.parts[0].text).story; } catch (e) { return `${player.name} stands victorious. The journey continues.`; }
+    }
+
+    function wrapText(text, x, y, maxWidth, lineHeight) {
+        if (!text) return; 
+        const paragraphs = String(text).split('\n'); let currentY = y;
+        for (let p = 0; p < paragraphs.length; p++) {
+            const words = paragraphs[p].split(' '); let line = '';
+            for(let n = 0; n < words.length; n++) {
+                const testLine = line + words[n] + ' ';
+                if (ctx.measureText(testLine).width > maxWidth && n > 0) { ctx.fillText(line, x, currentY); line = words[n] + ' '; currentY += lineHeight; } 
+                else { line = testLine; }
+            }
+            ctx.fillText(line, x, currentY); currentY += lineHeight + (lineHeight * 0.5);
+        }
+    }
+
+    function createParticle(x, y, text, color) { combat.particles.push({ x, y, text, color, life: 1.0, velocityY: -50 }); }
+
+    function generateChestLoot() {
+        const slots = ['weapon', 'armor', 'shoes', 'accessory']; const slot = slots[Math.floor(Math.random() * slots.length)];
+        let item = { name: "", slot: slot, bonusStr: 0, bonusTech: 0, multHp: 1, multSpd: 1, multXp: 1, multStr: 1, multTech: 1 };
+        if (slot === 'weapon') {
+            item.name = ["Plasma", "Neon", "Quantum"][Math.floor(Math.random()*3)] + " " + ["Blade", "Rifle", "Deck"][Math.floor(Math.random()*3)];
+            if(Math.random() > 0.5) item.bonusStr = Math.floor(Math.random() * 10) + player.level * 2; else item.bonusTech = Math.floor(Math.random() * 10) + player.level * 2;
+            if(Math.random() > 0.9) item.multStr = 2.0; 
+        } else if (slot === 'armor') { item.name = ["Titanium", "Aegis", "Kevlar"][Math.floor(Math.random()*3)] + " Chassis"; item.multHp = 1.0 + (Math.floor(Math.random() * 10) * 0.1); 
+        } else if (slot === 'shoes') { item.name = ["Hermes", "Sonic", "Aero"][Math.floor(Math.random()*3)] + " Treads"; item.multSpd = 1.0 + (Math.floor(Math.random() * 5) * 0.2); 
+        } else if (slot === 'accessory') {
+            item.name = ["Logic", "Data", "Matrix"][Math.floor(Math.random()*3)] + " Core";
+            const roll = Math.random();
+            if(roll > 0.6) item.multXp = [2, 3, 10][Math.floor(Math.random()*3)]; else if(roll > 0.3) { item.multStr = 2.0; item.multTech = 2.0; } else { item.multHp = 2.0; item.multSpd = 2.0; }
+        }
+        return item;
+    }
+
+    function formatItemStats(item) {
+        if (!item) return "NONE"; let stats = [];
+        if (item.bonusStr > 0) stats.push(`+${item.bonusStr} STR`); if (item.bonusTech > 0) stats.push(`+${item.bonusTech} TECH`);
+        if (item.multHp > 1) stats.push(`x${item.multHp.toFixed(1)} HP`); if (item.multSpd > 1) stats.push(`x${item.multSpd.toFixed(1)} SPD`);
+        if (item.multStr > 1) stats.push(`x${item.multStr.toFixed(1)} STR`); if (item.multTech > 1) stats.push(`x${item.multTech.toFixed(1)} TECH`);
+        if (item.multXp > 1) stats.push(`x${item.multXp} XP`);
+        return stats.join(", ");
+    }
+
+    function spawnEntity() {
+        if (Math.random() < 0.035) { 
+            const rand = Math.random();
+            if (currentStage === 1 && rand < 0.25) entities.push({ globalX: cameraX + 900, y: 400, w: 20, h: 50, type: 'CURSE', active: true });
+            else if (currentStage === 1 && rand < 0.40) entities.push({ globalX: cameraX + 900, y: 280, w: 30, h: 30, type: 'BLESSING', active: true });
+            else if (rand < 0.70) entities.push({ globalX: cameraX + 900, y: 435, w: 20, h: 20, type: 'XP', active: true });
+            else entities.push({ globalX: cameraX + 900, y: 435, w: 20, h: 20, type: 'HP', active: true });
+        }
+    }
+
+    function executeCombatTrigger(type) {
+        gameState = 'LOADING_ENCOUNTER'; encounterType = type; player.distanceTraveled = 0; entities = []; 
+        fetchDynamicEnemy(player.level, type).then(data => {
+            let mult = type === 'BOSS' ? 4 : (type === 'TOURNAMENT' ? 2 : 1);
+            if (data) {
+                let safeMaxHp = parseInt(data.maxHp) || 40; let scaledHp = Math.max(safeMaxHp, 40 * player.level * mult);
+                enemy = { name: data.name || "Construct", hp: scaledHp, maxHp: scaledHp, atb: 0, maxAtb: 100, speedStat: parseInt(data.speedStat) || 20, color: data.colorHex || '#ff0055', entranceQuote: data.entranceQuote || "Engaging.", attackQuote: data.attackQuote || "Attacking." };
+            } else {
+                let sHp = fallbackEnemy.maxHp * player.level * mult; enemy = { ...fallbackEnemy, name: type + ' Construct', hp: sHp, maxHp: sHp };
+            }
+            if (type === 'PET') { pendingPet = petList[Math.floor(Math.random() * petList.length)]; enemy.name = pendingPet.name; }
+            gameState = 'COMBAT'; player.atb = 0; combat.turnState = 'FILLING'; combat.freezeTimer = 0;
+            combat.message = enemy.entranceQuote; combat.messageTimer = 3; combat.menuIndex = 0; keys['Enter'] = false;
+        });
+    }
+
+    function triggerEncounterCheck() {
+        keys['Enter'] = false; keys['Y'] = false; keys['N'] = false;
+        if (currentStage === 1) executeCombatTrigger('STANDARD'); else if (currentStage === 2) executeCombatTrigger('PET');
+    }
+
+    function processLevelUps() {
+        let leveled = false;
+        while (player.xp >= player.nextLevelXp) { player.level++; player.xp -= player.nextLevelXp; player.nextLevelXp = Math.floor(player.nextLevelXp * 1.5); player.skillPoints += 3; leveled = true; }
+        if (leveled) { player.updateDerivedStats(); player.hp = player.maxHp; player.mp = player.maxMp; postCombatMessage += `\nLEVEL UP! Reached Level ${player.level}.`; }
+    }
+
+    function handlePostCombatRewards() {
+        player.activeCurse = null; player.activeBlessing = null; player.updateDerivedStats();
+        let baseReward = encounterType === 'BOSS' ? 200 : (encounterType === 'TOURNAMENT' ? 80 : 40);
+        let earnedXp = Math.floor((baseReward * player.level) * player.xpMultiplier);
+        player.xp += earnedXp; postCombatMessage = `Gained ${earnedXp} XP.`; processLevelUps();
+
+        if (encounterType === 'STANDARD' && currentStage === 1) {
+            stageEnemiesDefeated++;
+            if (stageEnemiesDefeated >= 5) { entities.push({ globalX: cameraX + 400, y: 435, w: 30, h: 20, type: 'STAGE_CHEST', active: true }); stageEnemiesDefeated = 0; }
+        } 
+        else if (encounterType === 'PET') { player.pet = pendingPet; player.updateDerivedStats(); postCombatMessage += `\nAcquired Companion: ${pendingPet.name}!`; }
+        else if (encounterType === 'TOURNAMENT') { if (Math.random() > 0.5) player.inventory.push(generateChestLoot()); }
+    }
+
+    function finalizePlayerTurn() {
+        player.atb = 0; combat.messageTimer = 3.5;
+        if (enemy.hp <= 0) {
+            enemy.hp = 0; combat.turnState = 'END'; handlePostCombatRewards();
+            setTimeout(() => {
+                if (gameState === 'COMBAT') {
+                    gameState = 'LOADING_STORY';
+                    fetchNextStoryBeat(enemy.name, encounterType).then(newStory => {
+                        storyText = `${postCombatMessage}\n\n${newStory}`;
+                        if (encounterType === 'BOSS') {
+                            if (player.amulet.length < 4) { gameState = 'AMULET_SELECTION'; amuletMenu.index = 0; postAmuletState = 'STORY_BEAT'; currentStage = 1; keys['Enter'] = false; return; }
+                            currentStage = 1;
+                        } 
+                        else if (encounterType === 'PET') { currentStage = 3; tournamentRound = 1; storyText += "\n\nEntering the Underground Tournament Arena..."; }
+                        else if (encounterType === 'TOURNAMENT') {
+                            tournamentRound++;
+                            if (tournamentRound > 3) { currentStage = 4; storyText += "\n\nTournament cleared! Approaching Omega Construct territory..."; } 
+                            else { gameState = 'TOURNAMENT_LOBBY'; keys['Enter'] = false; return; }
+                        }
+                        gameState = 'STORY_BEAT'; keys['Enter'] = false;
+                    });
+                }
+            }, 2000);
+        } else { combat.turnState = 'FILLING'; }
+    }
+
+    function executePlayerAction() {
+        const option = combat.options[combat.menuIndex];
+        if (option === 'Attack') {
+            const dmg = Math.floor(Math.random() * 5) + player.baseDamage;
+            enemy.hp -= dmg; createParticle(600, 300, dmg, '#fff'); combat.message = `Physical strike: ${dmg} damage!`; finalizePlayerTurn();
+        } else if (option.includes('Magic')) {
+            if (player.mp >= 10) { player.mp -= 10; const dmg = Math.floor(Math.random() * 10) + player.magicDamage; enemy.hp -= dmg; createParticle(600, 300, dmg, '#00ffcc'); combat.message = `Neon Blast: ${dmg} tech damage!`; finalizePlayerTurn(); } 
+            else { combat.message = "Not enough MP!"; }
+        } else if (option.includes('AI Hack')) {
+            if (player.mp >= 20) {
+                player.mp -= 20; combat.turnState = 'AWAITING_HACK'; combat.message = "✨ Calling Neural Network... ✨";
+                fetchAIHack(enemy.name).then(hack => {
+                    const totalDamage = player.magicDamage + (parseInt(hack.damage) || 50); enemy.hp -= totalDamage; createParticle(600, 300, totalDamage, '#ff00cc'); combat.message = String(hack.description || "Neural link established."); finalizePlayerTurn();
+                });
+            } else { combat.message = "Not enough MP!"; }
+        }
+    }
+
+    function drawParallaxBackground(ctx, camX, time, stage) {
+        let bgBase = '#020205', sky = '#0a0f1a', mid = '#111b2b', lines = '#00ffcc', drop = 'rgba(0, 255, 204, 0.4)';
+        if (stage === 2) { bgBase = '#1a0500'; sky = '#331100'; mid = '#552200'; lines = '#ffaa00'; drop = 'rgba(255, 150, 0, 0.4)'; } 
+        else if (stage === 3) { bgBase = '#050011'; sky = '#110022'; mid = '#220044'; lines = '#cc00ff'; } 
+        else if (stage === 4) { bgBase = '#220000'; sky = '#440000'; mid = '#110000'; lines = '#ff0000'; }
+
+        ctx.fillStyle = bgBase; ctx.fillRect(0, 0, canvas.width, canvas.height);
+        const bgGrad = ctx.createRadialGradient(400, 300, 100, 400, 300, 600); bgGrad.addColorStop(0, sky); bgGrad.addColorStop(1, bgBase);
+        ctx.fillStyle = bgGrad; ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+        if (stage === 3) {
+            ctx.fillStyle = 'rgba(255, 255, 255, 0.05)'; ctx.beginPath(); ctx.moveTo(200, 0); ctx.lineTo(100, 450); ctx.lineTo(300, 450); ctx.fill();
+            ctx.beginPath(); ctx.moveTo(600, 0); ctx.lineTo(500, 450); ctx.lineTo(700, 450); ctx.fill();
+            ctx.strokeStyle = lines; ctx.lineWidth = 5; ctx.beginPath(); ctx.moveTo(0, 450); ctx.lineTo(canvas.width, 450); ctx.stroke(); return;
+        }
+
+        ctx.fillStyle = sky; for (let i = 0; i < 20; i++) { let bX = (i * 100) - (camX * 0.1) % 100; ctx.fillRect(bX, 150 + Math.sin(i)*60, 90, 450); if(i%3===0 && stage !== 4) { ctx.fillStyle = lines; ctx.fillRect(bX+20, 200 + Math.sin(i)*60, 5, 5); ctx.fillStyle = sky; } }
+        ctx.fillStyle = mid; for (let i = 0; i < 15; i++) { let bX = (i * 150) - (camX * 0.3) % 150; ctx.fillRect(bX, 250 + Math.cos(i)*80, 140, 350); }
+        ctx.strokeStyle = lines; ctx.lineWidth = 3; ctx.beginPath(); ctx.moveTo(0, 450); ctx.lineTo(canvas.width, 450); ctx.stroke();
+        ctx.strokeStyle = `rgba(100, 100, 100, 0.3)`; for (let i = 0; i < 30; i++) { let lineX = (i * 40) - (camX * 1.0) % 40; ctx.beginPath(); ctx.moveTo(lineX, 450); ctx.lineTo(lineX - 250, 600); ctx.stroke(); }
+        if (stage !== 4) { ctx.strokeStyle = drop; ctx.lineWidth = 1; ctx.beginPath(); for (const d of rain) { ctx.moveTo(d.x, d.y); ctx.lineTo(d.x - (d.length * 0.2), d.y + d.length); } ctx.stroke(); }
+    }
+
+    function drawPlayerCharacter(ctx, x, y, time, isMoving, isCombat) {
+        let bob = isMoving && !player.isJumping ? Math.sin(time * 15) * 8 : 0; if (!isMoving && !player.isJumping) bob = Math.sin(time * 3) * 3;
+        const lean = isMoving && !player.isJumping ? 15 : 0; ctx.save(); 
+        let glitchX = 0, glitchY = 0; if (isCombat && player.activeCurse === 'GLITCH_DANCE') { glitchX = (Math.random() - 0.5) * 15; glitchY = (Math.random() - 0.5) * 15; }
+        ctx.translate(x + glitchX, y + bob + glitchY); if (isCombat && player.activeCurse === 'MINIATURIZED') ctx.scale(0.5, 0.5);
+        if (isMoving && !player.isJumping) ctx.rotate(lean * Math.PI / 180);
+        ctx.shadowBlur = 20; ctx.shadowColor = player.color; ctx.fillStyle = player.color; ctx.beginPath(); ctx.arc(-15, 0, 8 + Math.sin(time*20)*2, 0, Math.PI*2); ctx.fill(); ctx.shadowBlur = 0;
+        const bodyGrad = ctx.createLinearGradient(-15, -60, 15, 0); bodyGrad.addColorStop(0, '#334455'); bodyGrad.addColorStop(1, '#112233');
+        ctx.fillStyle = bodyGrad; ctx.beginPath(); ctx.moveTo(-10, -50); ctx.lineTo(15, -45); ctx.lineTo(20, -10); ctx.lineTo(5, 5); ctx.lineTo(-15, -5); ctx.closePath(); ctx.fill();
+        ctx.strokeStyle = player.color; ctx.lineWidth = 2; ctx.stroke(); ctx.fillStyle = '#005555'; ctx.fillRect(-5, -40, 15, 10);
+        ctx.fillStyle = '#223344'; ctx.beginPath(); ctx.arc(5, -60, 12, 0, Math.PI*2); ctx.fill(); ctx.fillStyle = '#fff'; ctx.shadowBlur = 10; ctx.shadowColor = '#fff'; ctx.fillRect(8, -65, 8, 4); ctx.shadowBlur = 0;
+        const armSwing = isMoving && !player.isJumping ? Math.cos(time * 15) * 20 : 0; ctx.save(); ctx.translate(5, -35); ctx.rotate(armSwing * Math.PI / 180); ctx.fillStyle = '#445566'; ctx.fillRect(-4, 0, 8, 30);
+        if (player.gear.weapon) { ctx.fillStyle = player.gear.weapon.bonusStr > 0 ? '#ff0055' : player.color; ctx.fillRect(-2, 20, 4, 25); } ctx.restore(); 
+        if (player.pet) { ctx.fillStyle = '#ffaa00'; ctx.shadowColor = '#ffaa00'; ctx.shadowBlur = 10; ctx.beginPath(); ctx.arc(-40, -10 + Math.sin(time*5)*5, 8, 0, Math.PI*2); ctx.fill(); ctx.shadowBlur = 0; }
+        ctx.restore();
+    }
+
+    function drawEnemyCharacter(ctx, x, y, time, enemyData) {
+        if (!enemyData) return;
+        const hover = Math.sin(time * 4) * 12; const scale = enemyData.isBoss ? 2.5 : (encounterType === 'TOURNAMENT' ? 1.5 : 1.0);
+        ctx.save(); ctx.translate(x, y + hover); ctx.scale(scale, scale); ctx.shadowBlur = 20 + Math.sin(time * 8) * 10; ctx.shadowColor = enemyData.color;
+        const coreGrad = ctx.createRadialGradient(0, -30, 5, 0, -30, 40); coreGrad.addColorStop(0, '#fff'); coreGrad.addColorStop(0.5, enemyData.color); coreGrad.addColorStop(1, '#111');
+        ctx.fillStyle = coreGrad; ctx.beginPath();
+        if (encounterType === 'PET') { ctx.moveTo(-20, -10); ctx.lineTo(20, -10); ctx.lineTo(30, -30); ctx.lineTo(-30, -30); ctx.closePath(); } 
+        else { ctx.moveTo(0, -70); ctx.lineTo(40, -30); ctx.lineTo(0, 10); ctx.lineTo(-40, -30); ctx.closePath(); } ctx.fill();
+        ctx.fillStyle = '#222'; ctx.beginPath(); ctx.arc(0, -30, 15, 0, Math.PI*2); ctx.fill();
+        ctx.fillStyle = enemyData.color; ctx.beginPath(); ctx.arc(0, -30, 8 + Math.sin(time*10)*2, 0, Math.PI*2); ctx.fill(); 
+        if (encounterType !== 'PET') { ctx.strokeStyle = '#fff'; ctx.lineWidth = 2; ctx.beginPath(); ctx.ellipse(0, -30, 50, 15, time, 0, Math.PI * 2); ctx.stroke(); ctx.beginPath(); ctx.ellipse(0, -30, 50, 15, -time * 1.5, 0, Math.PI * 2); ctx.stroke(); }
+        ctx.restore();
+    }
+
+    function drawEntity(ctx, item, time) {
+        const screenX = item.globalX - cameraX;
+        if (screenX > -50 && screenX < canvas.width + 50) {
+            ctx.save(); 
+            if (item.type === 'CURSE') {
+                ctx.translate(screenX, item.y); ctx.strokeStyle = '#ff0000'; ctx.lineWidth = 4; ctx.shadowBlur = 15; ctx.shadowColor = '#ff0000'; ctx.beginPath(); ctx.moveTo(0, item.h);
+                for (let i = item.h; i >= 0; i -= 10) ctx.lineTo(Math.sin((time * 10) + i) * 10, i); ctx.stroke(); ctx.fillStyle = '#ff0000'; ctx.font = '12px Courier New'; ctx.textAlign = 'center'; ctx.fillText("ANOMALY", 0, -10);
+            } else if (item.type === 'BLESSING') {
+                const hover = Math.sin(time * 6) * 10; ctx.translate(screenX, item.y + hover); ctx.strokeStyle = '#ffd700'; ctx.lineWidth = 3; ctx.shadowBlur = 20; ctx.shadowColor = '#ffd700';
+                ctx.beginPath(); ctx.arc(15, 15, 15, 0, Math.PI*2); ctx.stroke(); ctx.beginPath(); ctx.arc(15, 15, 8 + Math.sin(time*5)*4, 0, Math.PI*2); ctx.fillStyle = '#ffd700'; ctx.fill();
+                ctx.fillStyle = '#fff'; ctx.font = '12px Courier New'; ctx.textAlign = 'center'; ctx.fillText("ORB", 15, -10);
+            } else if (item.type === 'CHEST' || item.type === 'STAGE_CHEST') {
+                ctx.translate(screenX, item.y); const chestColor = item.type === 'STAGE_CHEST' ? '#00ffcc' : '#ff00cc'; ctx.shadowBlur = 20; ctx.shadowColor = chestColor;
+                ctx.fillStyle = '#221133'; ctx.fillRect(-15, -20, 30, 20); ctx.fillStyle = chestColor; ctx.fillRect(-15, -20, 30, 5); ctx.fillStyle = '#fff'; ctx.fillRect(-3, -15, 6, 6); 
+                if(item.type === 'STAGE_CHEST') { ctx.fillStyle = '#fff'; ctx.font = '10px Courier New'; ctx.textAlign = 'center'; ctx.fillText("EXIT", 0, -30); }
+            } else { 
+                const hover = Math.sin(time * 6) * 5; ctx.translate(screenX, item.y + hover); ctx.shadowBlur = 15; ctx.shadowColor = item.type === 'HP' ? '#0f0' : '#ff0'; ctx.fillStyle = item.type === 'HP' ? '#0f0' : '#ff0';
+                ctx.beginPath(); ctx.moveTo(0, -10); ctx.lineTo(10, 0); ctx.lineTo(0, 10); ctx.lineTo(-10, 0); ctx.fill(); ctx.fillStyle = '#fff'; ctx.font = '10px Courier New'; ctx.textAlign = 'center'; ctx.fillText(item.type, 0, -15);
+            }
+            ctx.restore();
+        }
+    }
+
+    function update(deltaTime) {
+        globalTime += deltaTime;
+        for (const drop of rain) { drop.y += drop.speed * deltaTime; drop.x -= (drop.speed * 0.2) * deltaTime; if (drop.y > 600) { drop.y = -20; drop.x = Math.random() * 1000; } }
+        if (gameState === 'CHARACTER_CREATION') return;
+        if (gameState === 'AMULET_SELECTION') {
+            if (keys['ArrowDown']) { amuletMenu.index = Math.min(amuletMenu.index + 1, amuletMenu.options.length - 1); keys['ArrowDown'] = false; }
+            if (keys['ArrowUp']) { amuletMenu.index = Math.max(amuletMenu.index - 1, 0); keys['ArrowUp'] = false; }
+            if (keys['Enter']) { player.amulet.push(amuletMenu.options[amuletMenu.index].id); player.updateDerivedStats(); gameState = postAmuletState; keys['Enter'] = false; }
+        } else if (gameState === 'STORY_INTRO' || gameState === 'STORY_BEAT') {
+            if (keys['Enter']) { gameState = currentStage === 3 ? 'TOURNAMENT_LOBBY' : (currentStage === 4 ? 'BOSS_PROMPT' : 'EXPLORE'); keys['Enter'] = false; }
+        } else if (gameState === 'TOURNAMENT_LOBBY') {
+            if (keys['Enter']) { executeCombatTrigger('TOURNAMENT'); keys['Enter'] = false; }
+            if (keys['KeyU']) { gameState = 'UPGRADE_MENU'; upgradeMenu.index = 0; keys['KeyU'] = false; }
+            if (keys['KeyI']) { gameState = 'INVENTORY_MENU'; inventoryMenu.index = 0; keys['KeyI'] = false; }
+            if (keys['KeyR']) { let spent = (player.stats.str - 5) + (player.stats.vit - 5) + (player.stats.tech - 5) + (player.stats.spd - 5); if (spent > 0) { player.skillPoints += spent; player.stats = { str: 5, vit: 5, tech: 5, spd: 5 }; player.updateDerivedStats(); } keys['KeyR'] = false; }
+        } else if (gameState === 'EXPLORE') {
+            player.isMoving = false; let dx = 0; if (keys['ArrowRight']) dx = 1; if (keys['ArrowLeft']) dx = -1;
+            if (keys['Space'] && !player.isJumping) { player.vy = -600; player.isJumping = true; keys['Space'] = false; }
+            if (player.isJumping || player.y < player.baseY) { player.vy += 1500 * deltaTime; player.y += player.vy * deltaTime; if (player.y >= player.baseY) { player.y = player.baseY; player.vy = 0; player.isJumping = false; } }
+            if (keys['KeyU']) { gameState = 'UPGRADE_MENU'; upgradeMenu.index = 0; keys['KeyU'] = false; }
+            if (keys['KeyI']) { gameState = 'INVENTORY_MENU'; inventoryMenu.index = 0; keys['KeyI'] = false; }
+            if (dx !== 0) {
+                player.isMoving = true; cameraX += dx * player.speed * deltaTime; player.distanceTraveled += Math.abs(dx * player.speed * deltaTime); spawnEntity();
+                const pRect = { x: cameraX + 135, y: player.y - 60, w: 30, h: 60 };
+                for (let i = entities.length - 1; i >= 0; i--) {
+                    const item = entities[i]; if (!item.active) continue;
+                    const eRect = { x: item.globalX - (item.w/2), y: item.y - (item.h/2), w: item.w, h: item.h };
+                    if (item.type === 'CURSE') { eRect.y = item.y; eRect.x = item.globalX - 10; }
+                    if (item.type === 'CHEST' || item.type === 'STAGE_CHEST') { eRect.y = item.y - 20; }
+                    if (pRect.x < eRect.x + eRect.w && pRect.x + pRect.w > eRect.x && pRect.y < eRect.y + eRect.h && pRect.y + pRect.h > eRect.y) {
+                        item.active = false;
+                        if (item.type === 'CURSE') { player.activeCurse = cursesList[Math.floor(Math.random() * cursesList.length)]; createParticle(150, player.y - 50, `CURSED!`, "#f00"); } 
+                        else if (item.type === 'BLESSING') { player.activeBlessing = blessingsList[Math.floor(Math.random() * blessingsList.length)]; player.updateDerivedStats(); createParticle(150, player.y - 50, `BLESSED!`, "#fd0"); } 
+                        else if (item.type === 'STAGE_CHEST') { currentLootDisplay = generateChestLoot(); gameState = 'CHEST_REWARD'; keys['Enter'] = false; currentStage = 2; storyText = "Leaving the Neon Slums...\n\nEntering the Global Outskirts.\nSearch this desert zone to find a Cyber-Pet companion."; }
+                        else if (item.type === 'CHEST') { currentLootDisplay = generateChestLoot(); gameState = 'CHEST_REWARD'; keys['Enter'] = false; } 
+                        else if (item.type === 'HP') { player.hp = Math.min(player.maxHp, player.hp + 30); createParticle(150, player.y - 30, "+30 HP", "#0f0"); } 
+                        else { player.xp += 15 * player.level * player.xpMultiplier; processLevelUps(); createParticle(150, player.y - 30, "+XP", "#ff0"); }
+                    }
+                }
+                entities = entities.filter(item => item.active && item.globalX > cameraX - 500 && item.globalX < cameraX + 1500);
+                if (player.distanceTraveled > 800 && Math.random() < 0.02) { keys['ArrowLeft']=false; keys['ArrowRight']=false; triggerEncounterCheck(); }
+            }
+        } 
+        else if (gameState === 'BOSS_PROMPT') { if (keys['Y']) { executeCombatTrigger('BOSS'); keys['Y']=false; } else if (keys['N']) { currentStage = 1; stageEnemiesDefeated = 0; storyText = "Retreating to the Neon Slums to train..."; gameState = 'STORY_BEAT'; keys['N'] = false; } }
+        else if (gameState === 'CHEST_REWARD') { if (keys['Enter']) { player.inventory.push(currentLootDisplay); if (currentStage === 2 && encounterType === 'STANDARD') gameState = 'STORY_BEAT'; else gameState = 'EXPLORE'; keys['Enter'] = false; } }
+        else if (gameState === 'UPGRADE_MENU') {
+            if (keys['ArrowDown']) { upgradeMenu.index = Math.min(upgradeMenu.index + 1, upgradeMenu.options.length - 1); keys['ArrowDown'] = false; }
+            if (keys['ArrowUp']) { upgradeMenu.index = Math.max(upgradeMenu.index - 1, 0); keys['ArrowUp'] = false; }
+            if (keys['Enter']) { const sel = upgradeMenu.options[upgradeMenu.index]; if (sel === 'exit') { gameState = currentStage === 3 ? 'TOURNAMENT_LOBBY' : 'EXPLORE'; } else if (player.skillPoints > 0) { player.stats[sel]++; player.skillPoints--; player.updateDerivedStats(); } keys['Enter'] = false; }
+        }
+        else if (gameState === 'INVENTORY_MENU') {
+            const maxIdx = Math.max(0, player.inventory.length); 
+            if (keys['ArrowDown']) { inventoryMenu.index = Math.min(inventoryMenu.index + 1, maxIdx); keys['ArrowDown'] = false; }
+            if (keys['ArrowUp']) { inventoryMenu.index = Math.max(inventoryMenu.index - 1, 0); keys['ArrowUp'] = false; }
+            if (keys['Enter']) {
+                if (inventoryMenu.index === player.inventory.length) { gameState = currentStage === 3 ? 'TOURNAMENT_LOBBY' : 'EXPLORE'; } 
+                else if (player.inventory.length > 0) { const selectedItem = player.inventory[inventoryMenu.index]; player.gear[selectedItem.slot] = selectedItem; player.updateDerivedStats(); }
+                keys['Enter'] = false;
+            }
+        }
+        else if (gameState === 'COMBAT') {
+            for (let i = combat.particles.length - 1; i >= 0; i--) { const p = combat.particles[i]; p.y += p.velocityY * deltaTime; p.life -= deltaTime; if (p.life <= 0) combat.particles.splice(i, 1); }
+            if (combat.turnState === 'FILLING') {
+                if (player.activeCurse === 'SYSTEM_FREEZE' && Math.random() < 0.01) combat.freezeTimer = 1.0;
+                if (combat.freezeTimer > 0) { combat.freezeTimer -= deltaTime; combat.message = "Curse: SYSTEM FROZEN!"; } else { player.atb += player.speedStat * deltaTime; }
+                enemy.atb += enemy.speedStat * deltaTime;
+                if (player.atb >= player.maxAtb) { player.atb = player.maxAtb; combat.turnState = 'PLAYER_ACTION'; keys['Enter'] = false; 
+                } else if (enemy.atb >= enemy.maxAtb) {
+                    enemy.atb = enemy.maxAtb;
+                    const baseEDmg = encounterType === 'BOSS' ? 20 : (encounterType === 'TOURNAMENT' ? 10 : 5); const dmg = Math.floor(Math.random() * 10) + (baseEDmg * player.level);
+                    player.hp -= dmg; createParticle(150, 300, dmg, '#ff0055'); combat.message = `${enemy.attackQuote} (${dmg} dmg!)`; enemy.atb = 0; combat.messageTimer = 2.0;
+                    if (player.hp <= 0) { player.hp = 0; gameState = 'GAME_OVER'; }
+                }
+            } else if (combat.turnState === 'PLAYER_ACTION') {
+                if (keys['ArrowDown']) { combat.menuIndex = Math.min(combat.menuIndex+1, 2); keys['ArrowDown'] = false; }
+                if (keys['ArrowUp']) { combat.menuIndex = Math.max(combat.menuIndex-1, 0); keys['ArrowUp'] = false; }
+                if (keys['Enter']) { executePlayerAction(); keys['Enter'] = false; }
+            }
+            if (combat.messageTimer > 0) combat.messageTimer -= deltaTime;
+        }
+    }
+
+    function draw() {
+        if (gameState === 'COMBAT' && player.activeCurse === 'BLURRED_VISION') ctx.filter = 'blur(4px)'; else ctx.filter = 'none';
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+        if (gameState === 'CHARACTER_CREATION') {
+            ctx.fillStyle = '#050510'; ctx.fillRect(0, 0, canvas.width, canvas.height);
+            ctx.fillStyle = '#00ffcc'; ctx.font = '24px Courier New'; ctx.textAlign = 'center'; ctx.fillText("ENTER OPERATIVE ALIAS:", canvas.width/2, 250);
+            ctx.font = 'bold 40px Courier New'; ctx.fillStyle = '#fff'; const cursor = Math.floor(globalTime * 2) % 2 === 0 ? '_' : ''; ctx.fillText(player.name + cursor, canvas.width/2, 320);
+            ctx.font = '16px Courier New'; ctx.fillStyle = '#666'; ctx.fillText("[TAP HERE TO TYPE] / [PRESS ENTER TO VERIFY]", canvas.width/2, 500); ctx.textAlign = 'left'; return;
+        }
+        
+        drawParallaxBackground(ctx, cameraX, globalTime, currentStage);
+        
+        if (gameState === 'AMULET_SELECTION') {
+            ctx.fillStyle = 'rgba(20, 0, 40, 0.95)'; ctx.fillRect(0, 0, canvas.width, canvas.height);
+            ctx.fillStyle = '#ff00cc'; ctx.font = 'bold 28px Courier New'; ctx.textAlign = 'center'; ctx.fillText(`CHOOSE ANOMALY GEM (SLOT ${player.amulet.length + 1}/4)`, canvas.width/2, 100);
+            ctx.fillStyle = '#fff'; ctx.font = '14px Courier New'; ctx.fillText("These gems permanently multiply all overall stats.", canvas.width/2, 150);
+            ctx.textAlign = 'left'; const startY = 230;
+            for (let i = 0; i < amuletMenu.options.length; i++) {
+                ctx.fillStyle = i === amuletMenu.index ? '#00ffcc' : '#aaa'; ctx.fillText(`${i === amuletMenu.index ? '>> ' : '   '} ${amuletMenu.options[i].label}`, 150, startY + (i * 40));
+            }
+        }
+        else if (gameState === 'EXPLORE') {
+            entities.forEach(item => { if(item.active) drawEntity(ctx, item, globalTime); });
+            drawPlayerCharacter(ctx, player.x, player.y, globalTime, player.isMoving, false);
+            ctx.fillStyle = '#fff'; ctx.font = '16px Courier New'; ctx.fillText(`OPERATIVE: ${player.name} [STAGE ${currentStage}]`, 20, 30);
+            ctx.fillText(`LVL: ${player.level} | XP: ${player.xp}/${player.nextLevelXp} | HP: ${player.hp}/${player.maxHp} | MP: ${player.mp}/${player.maxMp}`, 20, 50);
+            if (player.activeCurse) { ctx.fillStyle = '#ff0000'; ctx.fillText(`CURSE ACTIVE: ${player.activeCurse}`, 20, 80); }
+            if (player.activeBlessing) { ctx.fillStyle = '#ffd700'; ctx.fillText(`BLESSING ACTIVE: ${player.activeBlessing}`, 20, 100); }
+            if (currentStage === 1) { ctx.fillStyle = '#ff00cc'; ctx.fillText(`Enemies until Checkpoint: ${5 - stageEnemiesDefeated}`, 20, 130); }
+        }
+        else if (gameState === 'STORY_INTRO' || gameState === 'STORY_BEAT') {
+            ctx.fillStyle = 'rgba(0, 5, 15, 0.85)'; ctx.fillRect(0, 0, canvas.width, canvas.height);
+            ctx.fillStyle = '#00ffcc'; ctx.font = '18px Courier New'; wrapText(storyText, 50, 100, 700, 28);
+        }
+        else if (gameState === 'TOURNAMENT_LOBBY') {
+            drawPlayerCharacter(ctx, 150, 450, globalTime, false, false);
+            ctx.fillStyle = 'rgba(0, 10, 20, 0.8)'; ctx.fillRect(100, 100, 600, 360);
+            ctx.fillStyle = '#cc00ff'; ctx.font = 'bold 30px Courier New'; ctx.textAlign = 'center'; ctx.fillText("THE UNDERGROUND TOURNAMENT", canvas.width/2, 160);
+            ctx.fillStyle = '#fff'; ctx.font = '20px Courier New'; ctx.fillText(`ROUND ${tournamentRound} of 3`, canvas.width/2, 220);
+            ctx.fillStyle = '#ffaa00'; ctx.fillText(`Available Points: ${player.skillPoints} (Tap Bottom-R to Reset)`, canvas.width/2, 280); ctx.textAlign = 'left';
+        }
+        else if (gameState === 'BOSS_PROMPT') {
+            ctx.fillStyle = 'rgba(255, 0, 85, 0.85)'; ctx.fillRect(0, 0, canvas.width, canvas.height);
+            ctx.fillStyle = '#fff'; ctx.font = 'bold 30px Courier New'; ctx.textAlign = 'center'; ctx.fillText("⚠️ OMEGA-CLASS CONSTRUCT DETECTED ⚠️", canvas.width/2, 250);
+            ctx.font = '20px Courier New'; ctx.fillText("Are you prepared to engage?", canvas.width/2, 300); ctx.textAlign = 'left';
+        }
+        else if (gameState === 'CHEST_REWARD') {
+            ctx.fillStyle = 'rgba(0, 10, 20, 0.9)'; ctx.fillRect(100, 150, 600, 300); ctx.strokeStyle = '#ff00cc'; ctx.lineWidth = 4; ctx.strokeRect(100, 150, 600, 300);
+            ctx.fillStyle = '#ff00cc'; ctx.font = 'bold 24px Courier New'; ctx.textAlign = 'center'; ctx.fillText("RARE CACHE OPENED!", canvas.width/2, 200);
+            ctx.fillStyle = '#fff'; ctx.font = '20px Courier New'; ctx.fillText(`Looted: ${currentLootDisplay.name}`, canvas.width/2, 260);
+            ctx.fillStyle = '#00ffcc'; ctx.font = '16px Courier New'; ctx.fillText(`Effects: ${formatItemStats(currentLootDisplay)}`, canvas.width/2, 300); ctx.textAlign = 'left';
+        }
+        else if (gameState === 'UPGRADE_MENU') {
+            ctx.fillStyle = 'rgba(0, 10, 20, 0.9)'; ctx.fillRect(50, 50, 700, 500); ctx.strokeStyle = '#00ffcc'; ctx.lineWidth = 2; ctx.strokeRect(50, 50, 700, 500);
+            ctx.fillStyle = '#00ffcc'; ctx.font = 'bold 24px Courier New'; ctx.fillText("CYBERNETICS ENHANCEMENT", 80, 80);
+            ctx.fillStyle = '#fff'; ctx.font = '18px Courier New'; ctx.fillText(`Unallocated Points: ${player.skillPoints}`, 80, 120);
+            const startY = 200;
+            for (let i = 0; i < upgradeMenu.options.length; i++) {
+                ctx.fillStyle = i === upgradeMenu.index ? '#00ffcc' : '#fff'; ctx.fillText(i === upgradeMenu.index ? '>> ' : '   ', 80, startY + (i * 40));
+                ctx.fillText(upgradeMenu.options[i] !== 'exit' ? `${upgradeMenu.labels[i]}` : upgradeMenu.labels[i], 120, startY + (i * 40));
+                if (upgradeMenu.options[i] !== 'exit') ctx.fillText(`[ ${player.stats[upgradeMenu.options[i]]} ]`, 450, startY + (i * 40));
+            }
+        }
+        else if (gameState === 'INVENTORY_MENU') {
+            ctx.fillStyle = 'rgba(0, 10, 20, 0.9)'; ctx.fillRect(50, 50, 700, 500); ctx.strokeStyle = '#00ffcc'; ctx.lineWidth = 2; ctx.strokeRect(50, 50, 700, 500);
+            ctx.fillStyle = '#00ffcc'; ctx.font = 'bold 24px Courier New'; ctx.fillText("ARSENAL & GEAR", 80, 60);
+            ctx.fillStyle = '#00aaff'; ctx.font = '14px Courier New'; ctx.fillText(`CORE AMULET [${player.amulet.length}/4]: ${player.amulet.length > 0 ? player.amulet.join(', ') : 'NONE'}`, 80, 90);
+            const p = player.pet; ctx.fillStyle = '#ffaa00'; ctx.fillText(`COMPANION: ${p ? p.name + ' (STR x'+p.multStr+', TECH x'+p.multTech+', SPD x'+p.multSpd+', HP x'+p.multHp+', XP x'+p.multXp+')' : 'NONE'}`, 80, 110);
+            ctx.fillStyle = '#ff00cc'; const g = player.gear;
+            ctx.fillText(`WEAPON:    ${g.weapon ? g.weapon.name + ' [' + formatItemStats(g.weapon) + ']' : 'NONE'}`, 80, 140);
+            ctx.fillText(`ARMOR:     ${g.armor ? g.armor.name + ' [' + formatItemStats(g.armor) + ']' : 'NONE'}`, 80, 160);
+            ctx.fillText(`SHOES:     ${g.shoes ? g.shoes.name + ' [' + formatItemStats(g.shoes) + ']' : 'NONE'}`, 80, 180);
+            ctx.fillText(`ACCESSORY: ${g.accessory ? g.accessory.name + ' [' + formatItemStats(g.accessory) + ']' : 'NONE'}`, 80, 200);
+
+            ctx.fillStyle = '#fff'; ctx.font = '16px Courier New'; const startY = 240;
+            if (player.inventory.length === 0) ctx.fillText("Stash is empty.", 80, startY);
+            else {
+                for (let i = 0; i < player.inventory.length; i++) {
+                    const item = player.inventory[i]; ctx.fillStyle = i === inventoryMenu.index ? '#00ffcc' : '#fff';
+                    const isEq = (g[item.slot] === item) ? "[E]" : "   ";
+                    ctx.fillText(`${i === inventoryMenu.index ? '>> ' : '   '}${isEq} ${item.name} (${item.slot}) - ${formatItemStats(item)}`, 80, startY + (i * 22));
+                }
+            }
+            const exitIdx = player.inventory.length; ctx.fillStyle = inventoryMenu.index === exitIdx ? '#00ffcc' : '#aaa';
+            ctx.fillText(inventoryMenu.index === exitIdx ? '>> CLOSE INVENTORY' : '   CLOSE INVENTORY', 80, startY + (Math.max(1, player.inventory.length) * 22) + 30);
+        }
+        else if (gameState === 'LOADING_ENCOUNTER' || gameState === 'LOADING_STORY') {
+            ctx.fillStyle = 'rgba(0,0,0,0.7)'; ctx.fillRect(0, 0, canvas.width, canvas.height);
+            ctx.fillStyle = encounterType === 'BOSS' ? '#ff0055' : (encounterType === 'TOURNAMENT' ? '#cc00ff' : '#00ffcc'); ctx.font = '24px Courier New'; ctx.textAlign = 'center';
+            const text = encounterType === 'BOSS' ? "⚠️ OMEGA THREAT ENGAGED ⚠️" : "✨ NEURAL LINK ACTIVE ✨"; ctx.fillText(text, canvas.width/2, canvas.height/2); ctx.textAlign = 'left';
+        }
+        else if (gameState === 'COMBAT') {
+            drawPlayerCharacter(ctx, 150, 450, globalTime, false, true); drawEnemyCharacter(ctx, 600, 350, globalTime, enemy); 
+            for (const p of combat.particles) { ctx.fillStyle = p.color; ctx.globalAlpha = p.life; ctx.font = 'bold 30px Courier New'; ctx.fillText(p.text, p.x, p.y); ctx.globalAlpha = 1.0; }
+
+            ctx.fillStyle = 'rgba(0, 10, 20, 0.9)'; ctx.fillRect(20, 450, 350, 130); ctx.fillRect(390, 450, 390, 130);
+            ctx.strokeStyle = encounterType === 'BOSS' ? '#ff0055' : '#00ffcc'; ctx.strokeRect(20, 450, 350, 130); ctx.strokeRect(390, 450, 390, 130);
+
+            ctx.fillStyle = '#fff'; ctx.font = '18px Courier New'; ctx.fillText(`${player.name} [LVL ${player.level}]`, 40, 480);
+            ctx.fillText(`HP: ${player.hp}/${player.maxHp}`, 40, 510); ctx.fillText(`MP: ${player.mp}/${player.maxMp}`, 40, 540);
+            
+            if (player.activeCurse) { ctx.fillStyle = '#f00'; ctx.font = '12px Courier New'; ctx.fillText(`[CURSE: ${player.activeCurse}]`, 40, 450); }
+            if (player.activeBlessing) { ctx.fillStyle = '#fd0'; ctx.font = '12px Courier New'; ctx.fillText(`[BLESSING: ${player.activeBlessing}]`, 40, 450); }
+            
+            ctx.fillStyle = enemy.color; ctx.textAlign = 'right'; ctx.font = '18px Courier New'; ctx.fillText(`${enemy.name} [HP: ${enemy.hp}]`, 760, 440); ctx.textAlign = 'left';
+
+            ctx.beginPath(); ctx.arc(300, 510, 30, 0, Math.PI * 2); ctx.strokeStyle = '#333'; ctx.lineWidth = 8; ctx.stroke();
+            ctx.beginPath(); ctx.arc(300, 510, 30, -Math.PI/2, (-Math.PI/2) + ((player.atb / player.maxAtb) * Math.PI * 2)); ctx.strokeStyle = player.atb >= player.maxAtb ? '#00ffcc' : '#00aa88'; ctx.stroke();
+
+            if (combat.turnState === 'PLAYER_ACTION') {
+                for (let i = 0; i < combat.options.length; i++) { ctx.fillStyle = (i === combat.menuIndex) ? '#00ffcc' : '#aaa'; ctx.fillText((i === combat.menuIndex ? '> ' : '  ') + combat.options[i], 410, 490 + (i * 30)); }
+            } else if (combat.turnState === 'AWAITING_HACK') { ctx.fillStyle = '#ff00cc'; ctx.fillText("Overriding...", 410, 490);
+            } else { ctx.fillStyle = '#666'; ctx.fillText("Awaiting Turn...", 410, 490); }
+
+            if (combat.messageTimer > 0) { ctx.fillStyle = encounterType === 'BOSS' ? '#ff0055' : '#fff'; ctx.textAlign = 'center'; wrapText(combat.message, canvas.width/2, 100, 700, 24); ctx.textAlign = 'left'; }
+        } 
+        else if (gameState === 'GAME_OVER') {
+            ctx.fillStyle = 'rgba(255, 0, 85, 0.3)'; ctx.fillRect(0, 0, canvas.width, canvas.height); ctx.fillStyle = '#fff'; ctx.font = '40px Courier New'; ctx.textAlign = 'center'; ctx.fillText("SYSTEM FAILURE", canvas.width/2, canvas.height/2);
+        }
+
+        ctx.filter = 'none';
+
+        if (gameState !== 'CHARACTER_CREATION' && gameState !== 'GAME_OVER') {
+            vPad.draw(ctx, gameState);
+        }
+    }
+
+    function gameLoop(timestamp) {
+        if (!lastTime) lastTime = timestamp;
+        let deltaTime = (timestamp - lastTime) / 1000; lastTime = timestamp;
+        if (deltaTime > 0.1) deltaTime = 0.1;
+        update(deltaTime); draw(); requestAnimationFrame(gameLoop);
+    }
+    requestAnimationFrame(gameLoop);
+</script>
+</body>
+</html>
