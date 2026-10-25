@@ -14,6 +14,6 @@ Chade's public playground for building and trying out apps that aren't personal 
 
 ## How to build here
 
-- One folder per project, grouped loosely (games/, tools/, experiments/). Each gets a short README saying what it is.
+- One folder per project, grouped loosely (for example games/, tools/, experiments/). Each gets a short README saying what it is.
 - Plain HTML, CSS and JavaScript by default so it runs straight from GitHub Pages. Must work on Android and iPhone.
 - Add each project to the root index.html.
